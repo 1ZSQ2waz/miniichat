@@ -22,7 +22,9 @@ data class AppSettings(
     val stream: Boolean = true,
     val language: String = "system",          // system | en | zh
     val dynamicColor: Boolean = true,
-    val themeMode: String = "system"          // system | light | dark
+    val themeMode: String = "system",          // system | light | dark
+    val webSearchEnabled: Boolean = false,
+    val webSearchApiKey: String = ""
 )
 
 class SettingsRepository(private val context: Context) {
@@ -36,6 +38,8 @@ class SettingsRepository(private val context: Context) {
         val LANG = stringPreferencesKey("language")
         val DYNAMIC = booleanPreferencesKey("dynamic_color")
         val THEME = stringPreferencesKey("theme_mode")
+        val WEB_SEARCH = booleanPreferencesKey("web_search_enabled")
+        val WEB_SEARCH_KEY = stringPreferencesKey("web_search_api_key")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { p -> read(p) }
@@ -49,7 +53,9 @@ class SettingsRepository(private val context: Context) {
         stream = p[Keys.STREAM] ?: true,
         language = p[Keys.LANG] ?: "system",
         dynamicColor = p[Keys.DYNAMIC] ?: true,
-        themeMode = p[Keys.THEME] ?: "system"
+        themeMode = p[Keys.THEME] ?: "system",
+        webSearchEnabled = p[Keys.WEB_SEARCH] ?: false,
+        webSearchApiKey = SecretBox.decrypt(p[Keys.WEB_SEARCH_KEY] ?: "")
     )
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
@@ -64,6 +70,8 @@ class SettingsRepository(private val context: Context) {
             p[Keys.LANG] = next.language
             p[Keys.DYNAMIC] = next.dynamicColor
             p[Keys.THEME] = next.themeMode
+            p[Keys.WEB_SEARCH] = next.webSearchEnabled
+            p[Keys.WEB_SEARCH_KEY] = SecretBox.encrypt(next.webSearchApiKey)
         }
     }
 }

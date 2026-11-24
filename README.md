@@ -1,6 +1,18 @@
 # MiniiChat
 
-A small, open-source Android chat client for any OpenAI-compatible LLM API. Native Kotlin + Jetpack Compose, no backend, bring your own keys.
+A small, open-source Android chat client for any OpenAI-compatible LLM API. It is built with Kotlin and Jetpack Compose, has no backend, and uses keys supplied by the user.
+
+## Wear OS and Android watch support
+
+MiniiChat includes a dedicated layout for round Android watches. It has been tested on the HUAWEI GLL-AL09 running Android 10 at 466 × 466 px. The debug build uses the separate `com.miniichat.debug` package, so it can be installed alongside the regular app.
+
+- An Android foreground service keeps a chat request active when the screen turns off; ongoing output is saved periodically and restored on return. A force stop, system process kill, lost connection or supplier timeout can still interrupt generation.
+- Swipe inward from the left or right rim to open history or provider/model controls. Messages use larger, selectable text and a readable fallback for common TeX commands such as `\\sqrt`.
+- The crown scrolls long messages, conversation lists, settings and provider lists.
+- Answers support headings, lists, tables, code blocks, copy actions and common mathematical notation.
+- Images are sent to compatible vision models. Text, Markdown, CSV, JSON, and XML files up to 256 KiB are included as text; PDF and other binary files require a separate extraction implementation.
+- Optional web search uses a separately supplied Brave Search API key and sends result summaries with URLs to the chosen model. Enable it in settings; the model provider's key does not grant Brave Search access.
+- Provider API keys and the search key are encrypted at rest with Android Keystore. Android backup is disabled so a restored database cannot refer to a missing encryption key.
 
 ## Features
 
@@ -12,7 +24,7 @@ A small, open-source Android chat client for any OpenAI-compatible LLM API. Nati
 - **Per-provider customization** — custom HTTP headers and extra body params (data layer; visual editor coming).
 - **Media attachments** — pick image or file from `+` menu. Images are sent as base64 data URLs (works with vision-capable models).
 - **Streaming** — Server-Sent-Events with a stop button.
-- **Markdown** — headings, fenced code blocks, lists, quotes, bold / italic / inline code / strikethrough.
+- **Markdown and formulas** — headings, tables, fenced code blocks, lists, quotes, bold / italic / inline code / strikethrough, and readable fallbacks for common TeX notation.
 - **Material You + theme mode** — dynamic color on Android 12+, plus follow-system / light / dark.
 - **Bilingual** — English and 简体中文 (Settings → Language).
 - **Pure local storage** — DataStore preferences, no analytics, no backend.
@@ -49,18 +61,36 @@ Other compatible endpoints:
 
 ## Build
 
-The repo includes a GitHub Actions workflow that produces signed `release` and `debug` APKs on every push.
+The GitHub Actions workflow builds debug and release APKs on every push. Tagged builds also create a GitHub Release.
 
 ```bash
 # Local build (needs JDK 17 + Android SDK)
 ./gradlew :app:assembleDebug
-./gradlew :app:assembleRelease   # falls back to debug-signed if no release.keystore present
+./gradlew :app:assembleRelease
 # APKs at app/build/outputs/apk/{debug,release}/
 ```
 
-To make a release locally, drop a `release.keystore` next to `app/build.gradle.kts` and set `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD` env vars (or gradle properties).
+Without a configured release keystore, release variants are debug-signed for local testing. For a production release, provide these environment variables or Gradle properties:
 
-CI uses an ephemeral keystore generated at build time, so artifacts won't match a previous install signature — uninstall the debug APK before installing the release APK on the same device.
+```text
+RELEASE_STORE_FILE=/absolute/path/to/release.keystore
+RELEASE_STORE_PASSWORD=...
+RELEASE_KEY_ALIAS=...
+RELEASE_KEY_PASSWORD=...
+```
+
+For tagged GitHub Releases, configure these repository secrets:
+
+```text
+RELEASE_KEYSTORE_BASE64   # base64 of the keystore file
+RELEASE_STORE_PASSWORD
+RELEASE_KEY_ALIAS
+RELEASE_KEY_PASSWORD
+```
+
+Never commit a keystore or its passwords. A release APK signed with a different key cannot update an app signed with the old key, so choose and protect the production key before distributing installable builds.
+
+Earlier repository history tracked a development keystore. Treat that key as public and generate a new production key before the next official release.
 
 ## Project layout
 

@@ -18,6 +18,32 @@ class AttachmentTooLargeException(val limitBytes: Long) :
     RuntimeException("Attachment exceeds ${limitBytes / 1024 / 1024} MB limit")
 
 object AttachmentLoader {
+    /** Read supported text files into the prompt; fail visibly for binary formats. */
+    fun loadText(resolver: ContentResolver, uri: Uri, mimeFallback: String): String {
+        val (name, size) = queryNameSize(resolver, uri)
+        val mime = (resolver.getType(uri) ?: mimeFallback).substringBefore(';').lowercase()
+        val extension = name.substringAfterLast('.', "").lowercase()
+        val allowed = mime.startsWith("text/") || mime in setOf(
+            "application/json", "application/xml", "application/x-yaml", "application/yaml",
+            "application/javascript", "application/x-ndjson"
+        ) || extension in setOf("txt", "md", "markdown", "csv", "json", "xml", "yaml", "yml", "log")
+        require(allowed) { "暂不支持解析 $name（$mime）；请选择文本、Markdown、CSV、JSON 或 XML 文件" }
+        val maxBytes = 256L * 1024
+        if (size > maxBytes) throw AttachmentTooLargeException(maxBytes)
+        resolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "无法读取文件：$name" }
+            val out = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (out.size() + count > maxBytes) throw AttachmentTooLargeException(maxBytes)
+                out.write(buffer, 0, count)
+            }
+            return "[附件：$name]\n${out.toString(Charsets.UTF_8.name())}\n[/附件]"
+        }
+    }
+
     /** Hard cap to keep base64 + JSON-encoded payload under request limits and avoid OOM. */
     const val MAX_ATTACHMENT_BYTES: Long = 10L * 1024 * 1024  // 10 MB
 

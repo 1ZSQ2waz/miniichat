@@ -45,6 +45,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -63,6 +65,7 @@ fun SettingsScreen(
     onOpenProviders: () -> Unit,
     onOpenAssistants: () -> Unit
 ) {
+    val scrollState = rememberScrollState()
     // Local state seeded once; LaunchedEffect resyncs only when external settings change.
     var system by rememberSaveable { mutableStateOf(settings.systemPrompt) }
     var temperature by rememberSaveable { mutableStateOf(settings.temperature) }
@@ -85,7 +88,8 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
+                .watchRotaryScroll(scrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -195,6 +199,50 @@ fun SettingsScreen(
                             checked = stream,
                             onCheckedChange = {
                                 onChange { s -> s.copy(stream = it) }
+                            }
+                        )
+                    }
+                }
+            }
+
+            SectionHeader("联网搜索")
+            SectionCard {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("联网搜索", style = MaterialTheme.typography.bodyLarge)
+                            Text("需要 Brave Search API Key", style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = settings.webSearchEnabled,
+                            onCheckedChange = { enabled ->
+                                if (!enabled || settings.webSearchApiKey.isNotBlank()) {
+                                    onChange { it.copy(webSearchEnabled = enabled) }
+                                }
+                            }
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text("Brave Search API Key", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedFieldBox {
+                        BasicTextField(
+                            value = settings.webSearchApiKey,
+                            onValueChange = { key -> onChange { it.copy(webSearchApiKey = key,
+                                webSearchEnabled = it.webSearchEnabled && key.isNotBlank()) } },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(color = LocalContentColor.current, fontSize = 14.sp),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            decorationBox = { field ->
+                                Box {
+                                    if (settings.webSearchApiKey.isEmpty()) Text("输入 API Key 以启用搜索",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodyMedium)
+                                    field()
+                                }
                             }
                         )
                     }
@@ -335,11 +383,13 @@ fun OutlinedFieldBox(content: @Composable () -> Unit) {
 
 @Composable
 fun SettingsTopBar(title: String, onBack: () -> Unit) {
+    val roundScreen = LocalConfiguration.current.isScreenRound
     Column {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 6.dp),
+                .padding(horizontal = if (roundScreen) 24.dp else 4.dp,
+                    vertical = if (roundScreen) 14.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {

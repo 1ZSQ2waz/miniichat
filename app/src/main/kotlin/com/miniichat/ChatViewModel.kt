@@ -3,26 +3,24 @@ package com.miniichat
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.miniichat.api.ChatMessage
 import com.miniichat.api.LlmClient
 import com.miniichat.data.AppSettings
+import com.miniichat.data.Attachment
 import com.miniichat.data.Assistant
 import com.miniichat.data.AssistantStore
 import com.miniichat.data.Conversation
 import com.miniichat.data.ConversationStore
-import com.miniichat.data.Message
 import com.miniichat.data.ProviderConfig
 import com.miniichat.data.ProviderStore
 import com.miniichat.data.SettingsRepository
+import com.miniichat.service.StreamingService
 import com.miniichat.util.PromptVars
 import com.miniichat.util.newId
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -46,16 +44,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val conversations: StateFlow<List<Conversation>> = store.conversationsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** In-memory overlay for the message currently being streamed.
-     *  Avoids a DataStore write on every token while keeping the UI live. */
-    private val _streamingOverlay = MutableStateFlow<Pair<String, String>?>(null)
-    val streamingOverlay: StateFlow<Pair<String, String>?> = _streamingOverlay.asStateFlow()
+    /** In-flight replies are keyed by conversation and survive Activity recreation. */
+    val activeReplies = StreamingService.replies
 
     private val _activeId = MutableStateFlow<String?>(null)
     val activeId: StateFlow<String?> = _activeId.asStateFlow()
-
-    private val _isStreaming = MutableStateFlow(false)
-    val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -66,7 +59,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _fetchingModelsFor = MutableStateFlow<String?>(null)
     val fetchingModelsFor: StateFlow<String?> = _fetchingModelsFor.asStateFlow()
 
-    private var streamingJob: Job? = null
+    init {
+        viewModelScope.launch {
+            store.recoverInterrupted { id -> !activeReplies.value.containsKey(id) }
+        }
+        viewModelScope.launch {
+            store.conversationsFlow.collect { list ->
+                if (_activeId.value == null) _activeId.value = list.firstOrNull { !it.archived }?.id
+            }
+        }
+        viewModelScope.launch {
+            StreamingService.error.collect { message -> if (message != null) _error.value = message }
+        }
+    }
 
     fun selectConversation(id: String?) { _activeId.value = id }
 
@@ -87,10 +92,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { store.rename(id, title) }
     }
 
+    fun archiveConversation(id: String, archived: Boolean) {
+        viewModelScope.launch {
+            store.setArchived(id, archived)
+            if (archived && _activeId.value == id) {
+                _activeId.value = store.snapshot().firstOrNull { !it.archived }?.id
+            }
+        }
+    }
+
     fun stopStreaming() {
-        streamingJob?.cancel()
-        streamingJob = null
-        _isStreaming.value = false
+        val id = _activeId.value ?: return
+        if (activeReplies.value.containsKey(id)) StreamingService.stop(getApplication(), id)
     }
 
     fun clearError() { _error.value = null }
@@ -204,206 +217,79 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun sendMessage(text: String, attachments: List<com.miniichat.data.Attachment> = emptyList()) {
-        // Reject re-entrant sends while a stream is in flight (debounce double-tap)
-        if (_isStreaming.value || streamingJob?.isActive == true) return
-        val trimmed = text.trim()
-        if (trimmed.isEmpty() && attachments.isEmpty()) return
+    fun sendMessage(
+        text: String,
+        attachments: List<Attachment> = emptyList(),
+        webSearch: Boolean = settings.value.webSearchEnabled
+    ): Boolean = startReply(_activeId.value ?: newConversation(), text, attachments, webSearch)
 
+    private fun startReply(
+        convId: String,
+        text: String,
+        attachments: List<Attachment>,
+        webSearch: Boolean = settings.value.webSearchEnabled,
+        replaceFromMessageId: String? = null
+    ): Boolean {
+        if (activeReplies.value.containsKey(convId)) return false
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() && attachments.isEmpty()) return false
         val current = settings.value
         val assistant = activeAssistant()
-
-        // Resolve effective provider and model: assistant override > settings active
         val provider = assistant?.preferredProviderId
             ?.let { id -> providers.value.firstOrNull { it.id == id } }
             ?: activeProvider()
         if (provider == null) {
             _error.value = "No provider configured."
-            return
+            return false
         }
-
-        val model = assistant?.preferredModel?.takeIf { it.isNotBlank() }
-            ?: current.activeModel
+        val model = assistant?.preferredModel?.takeIf { it.isNotBlank() } ?: current.activeModel
         if (model.isBlank()) {
             _error.value = "No model selected."
-            return
+            return false
         }
-
         if (provider.apiKey.isBlank()
             && !provider.baseUrl.contains("localhost")
             && !provider.baseUrl.contains("10.0.2.2")
         ) {
             _error.value = "API key is empty for ${provider.name}."
-            return
+            return false
         }
-
-        val temperature = assistant?.temperature ?: current.temperature
-
-        val systemPromptRaw = assistant?.systemPrompt?.takeIf { it.isNotBlank() }
-            ?: current.systemPrompt
-        val systemPrompt = PromptVars.render(
-            template = systemPromptRaw,
+        val prompt = PromptVars.render(
+            template = assistant?.systemPrompt?.takeIf { it.isNotBlank() } ?: current.systemPrompt,
             model = model,
             provider = provider.name,
             assistant = assistant?.name ?: ""
         )
-
-        viewModelScope.launch {
-            val activeId = _activeId.value ?: newId().also { _activeId.value = it }
-            val existing = store.snapshot().firstOrNull { it.id == activeId }
-            val baseTitle = trimmed.take(30).replace("\n", " ")
-
-            val userMsg = Message(
-                id = newId(),
-                role = "user",
-                content = trimmed,
-                attachments = attachments
-            )
-            val assistantId = newId()
-            val assistantPlaceholder = Message(id = assistantId, role = "assistant", content = "")
-
-            val updated = (existing ?: Conversation(id = activeId, title = baseTitle, messages = emptyList()))
-                .let { conv ->
-                    conv.copy(
-                        title = if (conv.messages.isEmpty()) baseTitle else conv.title,
-                        messages = conv.messages + userMsg + assistantPlaceholder,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                }
-            store.upsert(updated)
-
-            val historyForApi = mutableListOf<ChatMessage>()
-            if (systemPrompt.isNotBlank()) {
-                historyForApi.add(ChatMessage("system", systemPrompt))
-            }
-            updated.messages
-                .filter { !(it.role == "assistant" && it.content.isEmpty()) }
-                .forEach { msg ->
-                    val imgs = msg.attachments.filter { it.type == "image" }
-                    if (msg.role == "user" && imgs.isNotEmpty()) {
-                        // Build multipart content: text + image_url parts.
-                        val parts = mutableListOf<com.miniichat.api.ChatPart>()
-                        if (msg.content.isNotBlank()) {
-                            parts.add(com.miniichat.api.ChatPart(type = "text", text = msg.content))
-                        }
-                        for (att in imgs) {
-                            // Try to load + base64-encode the image. Fall back silently if it fails.
-                            val loaded = runCatching {
-                                com.miniichat.util.AttachmentLoader.load(
-                                    resolver = getApplication<android.app.Application>().contentResolver,
-                                    uri = android.net.Uri.parse(att.uri),
-                                    mimeFallback = att.mimeType.ifBlank { "image/jpeg" }
-                                )
-                            }.getOrNull() ?: continue
-                            val dataUrl = "data:${loaded.mimeType};base64,${loaded.base64}"
-                            parts.add(com.miniichat.api.ChatPart(
-                                type = "image_url",
-                                imageUrl = com.miniichat.api.ChatPart.ImageUrl(url = dataUrl)
-                            ))
-                        }
-                        // Also describe non-image attachments as text references.
-                        val others = msg.attachments.filter { it.type != "image" }
-                        if (others.isNotEmpty()) {
-                            val tail = others.joinToString("\n") { "[file: ${it.name} (${it.mimeType})]" }
-                            val merged = if (parts.firstOrNull()?.type == "text") {
-                                parts[0] = com.miniichat.api.ChatPart(
-                                    type = "text",
-                                    text = (parts[0].text ?: "") + "\n\n" + tail
-                                )
-                                parts
-                            } else {
-                                listOf(com.miniichat.api.ChatPart(type = "text", text = tail)) + parts
-                            }
-                            historyForApi.add(ChatMessage(msg.role, msg.content, merged))
-                        } else {
-                            historyForApi.add(ChatMessage(msg.role, msg.content, parts))
-                        }
-                    } else if (msg.role == "user" && msg.attachments.isNotEmpty()) {
-                        // Files only — describe inline as text refs.
-                        val refs = msg.attachments.joinToString("\n") {
-                            "[file: ${it.name} (${it.mimeType})]"
-                        }
-                        val combined = if (msg.content.isBlank()) refs else "${msg.content}\n\n$refs"
-                        historyForApi.add(ChatMessage(msg.role, combined))
-                    } else {
-                        historyForApi.add(ChatMessage(msg.role, msg.content))
-                    }
-                }
-
-            _isStreaming.value = true
-            val builder = StringBuilder()
-
-            // Use settings.copy with assistant temperature override
-            val effectiveSettings = current.copy(temperature = temperature)
-
-            streamingJob = launch {
-                var lastFlush = 0L
-                val flushIntervalMs = 250L
-                _streamingOverlay.value = assistantId to ""
-                try {
-                    client.chatStream(provider, effectiveSettings, model, historyForApi)
-                        .catch { e ->
-                            _error.value = e.message ?: "Request failed"
-                            val finalContent = if (builder.isEmpty()) "(error: ${e.message})" else builder.toString()
-                            appendAssistant(activeId, assistantId, finalContent)
-                        }
-                        .collect { delta ->
-                            builder.append(delta)
-                            // 1) update in-memory overlay every token (no IO)
-                            _streamingOverlay.value = assistantId to builder.toString()
-                            // 2) throttled DataStore flush
-                            val now = System.currentTimeMillis()
-                            if (now - lastFlush >= flushIntervalMs) {
-                                appendAssistant(activeId, assistantId, builder.toString())
-                                lastFlush = now
-                            }
-                        }
-                } finally {
-                    if (builder.isNotEmpty()) {
-                        appendAssistant(activeId, assistantId, builder.toString())
-                    }
-                    _streamingOverlay.value = null
-                    _isStreaming.value = false
-                    streamingJob = null
-                }
-            }
+        val request = StreamingService.Request(
+            conversationId = convId,
+            text = trimmed,
+            attachments = attachments,
+            provider = provider,
+            settings = current.copy(temperature = assistant?.temperature ?: current.temperature),
+            model = model,
+            systemPrompt = prompt,
+            webSearch = webSearch,
+            replaceFromMessageId = replaceFromMessageId
+        )
+        val started = StreamingService.start(getApplication(), request)
+        if (!started) {
+            _error.value = StreamingService.error.value ?: "Could not start generation"
         }
+        return started
     }
+    fun regenerate() = regenerateReply(null)
 
-    private suspend fun appendAssistant(convId: String, msgId: String, content: String) {
-        val list = store.snapshot()
-        val conv = list.firstOrNull { it.id == convId } ?: return
-        val newMsgs = conv.messages.map { if (it.id == msgId) it.copy(content = content) else it }
-        store.upsert(conv.copy(messages = newMsgs, updatedAt = System.currentTimeMillis()))
-    }
+    fun regenerateFrom(messageId: String) = regenerateReply(messageId)
 
-    fun regenerate() {
+    private fun regenerateReply(messageId: String?) {
+        val convId = _activeId.value ?: return
+        if (activeReplies.value.containsKey(convId)) return
         viewModelScope.launch {
-            val convId = _activeId.value ?: return@launch
             val conv = store.snapshot().firstOrNull { it.id == convId } ?: return@launch
-            val msgs = conv.messages
-            val lastUserIdx = msgs.indexOfLast { it.role == "user" }
-            if (lastUserIdx < 0) return@launch
-            val lastUser = msgs[lastUserIdx]
-            val trimmed = msgs.subList(0, lastUserIdx + 1)
-            store.upsert(conv.copy(messages = trimmed, updatedAt = System.currentTimeMillis()))
-            sendMessage(lastUser.content, lastUser.attachments)
-        }
-    }
-
-    /** Branch from a specific user message — drops everything after it and re-sends. */
-    fun regenerateFrom(messageId: String) {
-        viewModelScope.launch {
-            val convId = _activeId.value ?: return@launch
-            val conv = store.snapshot().firstOrNull { it.id == convId } ?: return@launch
-            val msgs = conv.messages
-            val idx = msgs.indexOfFirst { it.id == messageId }
-            if (idx < 0) return@launch
-            val target = msgs[idx]
-            if (target.role != "user") return@launch
-            val trimmed = msgs.subList(0, idx + 1)
-            store.upsert(conv.copy(messages = trimmed, updatedAt = System.currentTimeMillis()))
-            sendMessage(target.content, target.attachments)
+            val target = conv.messages.lastOrNull {
+                it.role == "user" && (messageId == null || it.id == messageId)
+            } ?: return@launch
+            startReply(convId, target.content, target.attachments, replaceFromMessageId = target.id)
         }
     }
 
@@ -411,9 +297,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
             val convId = _activeId.value ?: return@launch
-            val conv = store.snapshot().firstOrNull { it.id == convId } ?: return@launch
-            val newMsgs = conv.messages.filterNot { it.id == messageId }
-            store.upsert(conv.copy(messages = newMsgs, updatedAt = System.currentTimeMillis()))
+            store.update { list -> list.map { conv ->
+                if (conv.id == convId) conv.copy(
+                    messages = conv.messages.filterNot { it.id == messageId },
+                    updatedAt = System.currentTimeMillis()
+                ) else conv
+            } }
         }
     }
 
@@ -421,11 +310,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun editMessage(messageId: String, newContent: String) {
         viewModelScope.launch {
             val convId = _activeId.value ?: return@launch
-            val conv = store.snapshot().firstOrNull { it.id == convId } ?: return@launch
-            val newMsgs = conv.messages.map {
-                if (it.id == messageId) it.copy(content = newContent) else it
-            }
-            store.upsert(conv.copy(messages = newMsgs, updatedAt = System.currentTimeMillis()))
+            store.updateMessage(convId, messageId, newContent)
         }
     }
 

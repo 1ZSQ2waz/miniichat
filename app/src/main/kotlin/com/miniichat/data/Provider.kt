@@ -23,8 +23,12 @@ object ProviderPresets {
     )
 
     val all: List<Preset> = listOf(
-        Preset("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini",
-            "Official OpenAI API"),
+        Preset("GPT · OpenAI", "https://api.openai.com/v1", "gpt-4o-mini",
+            "OpenAI Chat Completions；可在模型列表切换 GPT 型号"),
+        Preset("Claude · Anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-5",
+            "Anthropic OpenAI 兼容接口；部分参数和工具能力有限"),
+        Preset("GLM · 智谱", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash",
+            "智谱 GLM OpenAI 兼容接口"),
         Preset("OpenRouter", "https://openrouter.ai/api/v1", "openrouter/auto",
             "Aggregator for OpenAI / Anthropic / Gemini / open-source"),
         Preset("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat",

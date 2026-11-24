@@ -5,9 +5,28 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val releaseStoreFile = ((project.findProperty("RELEASE_STORE_FILE") as String?)
+    ?: System.getenv("RELEASE_STORE_FILE"))
+    ?.takeIf { it.isNotBlank() }
+    ?: "release.keystore"
+val releaseStorePassword = ((project.findProperty("RELEASE_STORE_PASSWORD") as String?)
+    ?: System.getenv("RELEASE_STORE_PASSWORD"))
+    ?.takeIf { it.isNotBlank() }
+val releaseKeyAlias = ((project.findProperty("RELEASE_KEY_ALIAS") as String?)
+    ?: System.getenv("RELEASE_KEY_ALIAS"))
+    ?.takeIf { it.isNotBlank() }
+val releaseKeyPassword = ((project.findProperty("RELEASE_KEY_PASSWORD") as String?)
+    ?: System.getenv("RELEASE_KEY_PASSWORD"))
+    ?.takeIf { it.isNotBlank() }
+val releaseSigningReady = file(releaseStoreFile).isFile &&
+    releaseStorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null
+
 android {
     namespace = "com.miniichat"
-    compileSdk = 34
+    compileSdk = 36
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         applicationId = "com.miniichat"
@@ -20,15 +39,11 @@ android {
 
     signingConfigs {
         create("release") {
-            val ksFile = file("release.keystore")
-            if (ksFile.exists()) {
-                storeFile = ksFile
-                storePassword = (project.findProperty("RELEASE_STORE_PASSWORD") as String?)
-                    ?: System.getenv("RELEASE_STORE_PASSWORD") ?: "miniichat"
-                keyAlias = (project.findProperty("RELEASE_KEY_ALIAS") as String?)
-                    ?: System.getenv("RELEASE_KEY_ALIAS") ?: "miniichat"
-                keyPassword = (project.findProperty("RELEASE_KEY_PASSWORD") as String?)
-                    ?: System.getenv("RELEASE_KEY_PASSWORD") ?: "miniichat"
+            if (releaseSigningReady) {
+                storeFile = file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -51,7 +66,7 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = if (file("release.keystore").exists()) {
+            signingConfig = if (releaseSigningReady) {
                 signingConfigs.getByName("release")
             } else {
                 signingConfigs.getByName("debug")
@@ -78,18 +93,18 @@ android {
 
     sourceSets["main"].java.srcDirs("src/main/kotlin")
 
-    // Output: miniichat-1.0.1-arm64-v8a-release.apk / miniichat-1.0.1-armeabi-v7a-release.apk
     applicationVariants.all {
         val variant = this
         outputs.all {
             val output = this as? com.android.build.gradle.internal.api.BaseVariantOutputImpl
-                ?: return@all
-            val abiName = output.filters
-                .firstOrNull { it.filterType == com.android.build.OutputFile.ABI }
-                ?.identifier
-                ?: "universal"
-            output.outputFileName =
-                "miniichat-${variant.versionName}-${abiName}-${variant.buildType.name}.apk"
+            if (output != null) {
+                val abiName = output.filters
+                    .firstOrNull { it.filterType == com.android.build.OutputFile.ABI }
+                    ?.identifier
+                    ?: "universal"
+                output.outputFileName =
+                    "miniichat-${variant.versionName}-${abiName}-${variant.buildType.name}.apk"
+            }
         }
     }
 

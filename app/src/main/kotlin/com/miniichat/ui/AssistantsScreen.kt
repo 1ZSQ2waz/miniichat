@@ -23,9 +23,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,11 +48,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Dialog
 import com.miniichat.R
 import com.miniichat.data.Assistant
 import com.miniichat.util.newId
@@ -62,6 +69,8 @@ fun AssistantsScreen(
     onUpsert: (Assistant) -> Unit,
     onDelete: (String) -> Unit
 ) {
+    val roundScreen = LocalConfiguration.current.isScreenRound
+    val scrollState = rememberScrollState()
     var editing by remember { mutableStateOf<Assistant?>(null) }
     var creating by remember { mutableStateOf(false) }
 
@@ -75,7 +84,8 @@ fun AssistantsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
+                .watchRotaryScroll(scrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -87,7 +97,7 @@ fun AssistantsScreen(
                     .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.primaryContainer)
                     .clickable { creating = true }
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
+                    .padding(horizontal = 16.dp, vertical = if (roundScreen) 8.dp else 14.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Add, contentDescription = null,
@@ -101,11 +111,17 @@ fun AssistantsScreen(
                 }
             }
 
+            if (roundScreen) Text(stringResource(R.string.assistant_list_hint),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp))
+
             assistants.forEach { a ->
                 AssistantRow(
                     assistant = a,
                     selected = a.id == activeId,
                     canDelete = assistants.size > 1,
+                    roundScreen = roundScreen,
                     onSelect = { onSelect(a.id) },
                     onEdit = { editing = a },
                     onDelete = { onDelete(a.id) }
@@ -136,12 +152,58 @@ private fun AssistantRow(
     assistant: Assistant,
     selected: Boolean,
     canDelete: Boolean,
+    roundScreen: Boolean,
     onSelect: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     val borderColor = if (selected) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant
+    if (roundScreen) {
+        var menuOpen by remember { mutableStateOf(false) }
+        val description = when (assistant.id) {
+            "default" -> stringResource(R.string.assistant_default_hint)
+            "coder" -> stringResource(R.string.assistant_coder_hint)
+            "translator" -> stringResource(R.string.assistant_translator_hint)
+            "writer" -> stringResource(R.string.assistant_writer_hint)
+            else -> assistant.systemPrompt
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, borderColor, RoundedCornerShape(14.dp))
+                .clickable(onClick = onSelect)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(assistant.avatar, fontSize = 20.sp)
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(assistant.name,
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(description, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Box {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "more",
+                        modifier = Modifier.size(18.dp))
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.edit)) },
+                        onClick = { menuOpen = false; onEdit() })
+                    if (canDelete) DropdownMenuItem(
+                        text = { Text(stringResource(R.string.delete)) },
+                        onClick = { menuOpen = false; onDelete() })
+                }
+            }
+        }
+        return
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -223,33 +285,116 @@ fun AssistantEditor(
     var systemPrompt by remember(initial?.id) { mutableStateOf(initial?.systemPrompt ?: "") }
     var hasTemp by remember(initial?.id) { mutableStateOf(initial?.temperature != null) }
     var temp by remember(initial?.id) { mutableStateOf(initial?.temperature ?: 0.7f) }
+    val roundScreen = LocalConfiguration.current.isScreenRound
+    val editorScroll = rememberScrollState()
+    val saveAssistant = {
+        val a = (initial ?: Assistant(id = newId(), name = name.trim()))
+            .copy(name = name.trim(), avatar = avatar.trim().ifBlank { "🤖" },
+                systemPrompt = systemPrompt, temperature = if (hasTemp) temp else null)
+        onSave(a)
+    }
+
+    if (roundScreen) {
+        Dialog(onDismissRequest = onCancel,
+            properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Column(modifier = Modifier.fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(WindowInsets.statusBars.asPaddingValues())) {
+                Row(modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 32.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = stringResource(R.string.cancel))
+                    }
+                    Text(stringResource(R.string.assistants),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = saveAssistant, enabled = name.isNotBlank(),
+                        modifier = Modifier.size(52.dp, 36.dp)) {
+                        Text(stringResource(R.string.save))
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant,
+                    thickness = 0.5.dp)
+                Column(modifier = Modifier.weight(1f)
+                    .verticalScroll(editorScroll)
+                    .watchRotaryScroll(editorScroll)
+                    .padding(horizontal = 30.dp)) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(stringResource(R.string.assistant_name),
+                        style = MaterialTheme.typography.labelLarge)
+                    OutlinedFieldBox {
+                        BasicTextField(value = name, onValueChange = { name = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(
+                                color = LocalContentColor.current, fontSize = 16.sp),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            singleLine = true)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(stringResource(R.string.assistant_avatar),
+                        style = MaterialTheme.typography.labelLarge)
+                    OutlinedFieldBox {
+                        BasicTextField(value = avatar, onValueChange = { avatar = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(
+                                color = LocalContentColor.current, fontSize = 16.sp),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            singleLine = true)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(stringResource(R.string.assistant_system_prompt),
+                        style = MaterialTheme.typography.labelLarge)
+                    OutlinedFieldBox {
+                        BasicTextField(value = systemPrompt,
+                            onValueChange = { systemPrompt = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(
+                                color = LocalContentColor.current,
+                                fontSize = 13.sp, lineHeight = 18.sp),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            minLines = 3, maxLines = 7)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(stringResource(R.string.prompt_vars_hint),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Switch(checked = hasTemp,
+                            onCheckedChange = { hasTemp = it })
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.override_temperature),
+                            style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (hasTemp) Slider(value = temp, onValueChange = { temp = it },
+                        valueRange = 0f..2f, steps = 19)
+                    Spacer(Modifier.height(40.dp))
+                }
+            }
+        }
+        return
+    }
 
     AlertDialog(
         onDismissRequest = onCancel,
         confirmButton = {
             TextButton(
                 enabled = name.isNotBlank(),
-                onClick = {
-                    val a = (initial ?: Assistant(id = newId(), name = name.trim()))
-                        .copy(
-                            name = name.trim(),
-                            avatar = avatar.trim().ifBlank { "🤖" },
-                            systemPrompt = systemPrompt,
-                            temperature = if (hasTemp) temp else null
-                        )
-                    onSave(a)
-                }
+                onClick = saveAssistant
             ) { Text(stringResource(R.string.save)) }
         },
         dismissButton = {
             TextButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) }
         },
         title = {
-            Text(if (initial == null) stringResource(R.string.add_assistant)
+            Text(if (roundScreen) stringResource(R.string.assistants)
+                else if (initial == null) stringResource(R.string.add_assistant)
                 else stringResource(R.string.edit_assistant))
         },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(editorScroll)
+                .watchRotaryScroll(editorScroll)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier

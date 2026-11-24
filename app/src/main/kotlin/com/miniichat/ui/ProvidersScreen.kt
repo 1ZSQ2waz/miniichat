@@ -50,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +81,8 @@ fun ProvidersScreen(
     onRemoveModel: (String, String) -> Unit,
     onSelectModel: (String, String) -> Unit
 ) {
+    val roundScreen = LocalConfiguration.current.isScreenRound
+    val scrollState = rememberScrollState()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -91,7 +94,8 @@ fun ProvidersScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
+                .watchRotaryScroll(scrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -118,20 +122,22 @@ fun ProvidersScreen(
             if (providers.isEmpty()) {
                 SectionCard {
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(24.dp),
+                        modifier = Modifier.fillMaxWidth().padding(if (roundScreen) 12.dp else 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Icon(
                             Icons.Default.Storage, contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(if (roundScreen) 24.dp else 40.dp)
                         )
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(if (roundScreen) 4.dp else 8.dp))
                         Text(stringResource(R.string.no_providers),
                             style = MaterialTheme.typography.titleMedium)
-                        Text(stringResource(R.string.no_providers_hint),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (!roundScreen) {
+                            Text(stringResource(R.string.no_providers_hint),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             } else {

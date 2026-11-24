@@ -33,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,10 +45,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.miniichat.R
 import com.miniichat.data.ProviderConfig
 import com.miniichat.data.ProviderPresets
@@ -64,6 +69,8 @@ fun ProviderEditorScreen(
     onCancel: () -> Unit,
     onSave: (ProviderConfig) -> Unit
 ) {
+    val roundScreen = LocalConfiguration.current.isScreenRound
+    val scrollState = rememberScrollState()
     var name by remember(initial?.id) { mutableStateOf(initial?.name ?: "") }
     var baseUrl by remember(initial?.id) { mutableStateOf(initial?.baseUrl ?: "") }
     var apiKey by remember(initial?.id) { mutableStateOf(initial?.apiKey ?: "") }
@@ -94,20 +101,27 @@ fun ProviderEditorScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 6.dp),
+                .padding(horizontal = if (roundScreen) 32.dp else 4.dp,
+                    vertical = if (roundScreen) 14.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onCancel) {
+            IconButton(onClick = onCancel,
+                modifier = if (roundScreen) Modifier.size(36.dp) else Modifier) {
                 Icon(Icons.Default.Close, contentDescription = "cancel")
             }
             Text(
-                if (initial == null) stringResource(R.string.add_provider)
+                if (roundScreen) stringResource(R.string.providers)
+                else if (initial == null) stringResource(R.string.add_provider)
                 else stringResource(R.string.edit_provider),
-                style = MaterialTheme.typography.titleLarge,
+                style = if (roundScreen) MaterialTheme.typography.titleMedium
+                    else MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             TextButton(
+                modifier = if (roundScreen) Modifier.size(52.dp, 36.dp) else Modifier,
                 enabled = name.isNotBlank()
                     && (baseUrl.isNotBlank() || presetBaseUrl.isNotBlank() || initial?.baseUrl?.isNotBlank() == true),
                 onClick = {
@@ -140,7 +154,8 @@ fun ProviderEditorScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
+                .watchRotaryScroll(scrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
@@ -209,6 +224,46 @@ fun ProviderEditorScreen(
     }
 
     if (presetSheetOpen) {
+        if (roundScreen) {
+            Dialog(
+                onDismissRequest = { presetSheetOpen = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(0.78f).height(154.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(stringResource(R.string.choose_preset),
+                            style = MaterialTheme.typography.titleMedium)
+                        Column(
+                            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
+                        ) {
+                            ProviderPresets.all.forEach { preset ->
+                                Text(
+                                    preset.name,
+                                    modifier = Modifier.fillMaxWidth()
+                                        .clickable {
+                                            if (name.isBlank()) name = preset.name
+                                            presetBaseUrl = preset.baseUrl
+                                            presetSheetOpen = false
+                                        }
+                                        .padding(vertical = 7.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        TextButton(
+                            onClick = { presetSheetOpen = false },
+                            modifier = Modifier.align(Alignment.End)
+                        ) { Text(stringResource(R.string.cancel)) }
+                    }
+                }
+            }
+        } else {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { presetSheetOpen = false },
             confirmButton = {
@@ -246,6 +301,7 @@ fun ProviderEditorScreen(
                 }
             }
         )
+        }
     }
 }
 

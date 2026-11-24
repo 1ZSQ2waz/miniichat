@@ -86,14 +86,17 @@ class LlmClient {
     private val client = HttpClient(OkHttp) {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         install(HttpTimeout) {
-            requestTimeoutMillis = 120_000
+            // Reasoning models may wait several minutes before the first token.
+            requestTimeoutMillis = 30L * 60 * 1000
             connectTimeoutMillis = 30_000
-            socketTimeoutMillis = 120_000
+            socketTimeoutMillis = 10L * 60 * 1000
         }
     }
 
     private fun chatEndpoint(baseUrl: String) = "${baseUrl.trimEnd('/')}/chat/completions"
     private fun modelsEndpoint(baseUrl: String) = "${baseUrl.trimEnd('/')}/models"
+
+    fun close() = client.close()
 
     /** Best-effort parse of a value that may be a number, bool, or string. */
     private fun coerceToJson(v: String): JsonElement {

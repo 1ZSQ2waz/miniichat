@@ -1,4 +1,6 @@
 .gradle/
+.gradle-home/
+.build-tmp/
 build/
 *.iml
 .idea/
@@ -11,5 +13,11 @@ captures/
 *.apk
 !gradle/wrapper/gradle-wrapper.jar
 .kotlin/
+*.keystore
 *.jks
+*.p12
+*.pem
+*.key
+keystore.properties
+secrets.properties
 

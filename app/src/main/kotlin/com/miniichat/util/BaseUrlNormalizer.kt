@@ -16,7 +16,7 @@ package com.miniichat.util
  */
 object BaseUrlNormalizer {
     private val versionedTails = listOf(
-        "/v1", "/v1beta", "/v2", "/v3",
+        "/v1", "/v1beta", "/v2", "/v3", "/v4",
         "/openai", "/openai/v1",
         "/api", "/api/v1",
         "/chat/completions"

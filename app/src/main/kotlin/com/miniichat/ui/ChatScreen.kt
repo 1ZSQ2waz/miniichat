@@ -12,7 +12,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -44,6 +48,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
@@ -55,21 +60,37 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.rotary.onPreRotaryScrollEvent
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.abs
+import kotlinx.coroutines.launch
 import com.miniichat.R
 import com.miniichat.data.AppSettings
 import com.miniichat.data.Conversation
@@ -83,8 +104,9 @@ fun ChatScreen(
     activeProvider: ProviderConfig?,
     isStreaming: Boolean,
     streamingOverlay: Pair<String, String>? = null,
+    rotaryActive: Boolean = true,
     onMenu: () -> Unit,
-    onSend: (String, List<com.miniichat.data.Attachment>) -> Unit,
+    onSend: (String, List<com.miniichat.data.Attachment>) -> Boolean,
     onStop: () -> Unit,
     onRegenerate: () -> Unit,
     onRegenerateFrom: (String) -> Unit = {},
@@ -92,11 +114,19 @@ fun ChatScreen(
     onEditMessage: (String, String) -> Unit = { _, _ -> },
     onNew: () -> Unit,
     onOpenSettings: () -> Unit,
-    onPickModel: () -> Unit
+    onPickModel: () -> Unit,
+    onToggleWebSearch: () -> Unit = {}
 ) {
-    var input by rememberSaveable { mutableStateOf("") }
+    val roundScreen = LocalConfiguration.current.isScreenRound
+    val density = LocalDensity.current
+    val swipeThreshold = with(density) { 18.dp.toPx() }
+    var chromeVisible by rememberSaveable(conversation?.id) { mutableStateOf(true) }
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    var composerHeightPx by remember { mutableIntStateOf(0) }
+    var input by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     var pendingAttachments by remember { mutableStateOf<List<com.miniichat.data.Attachment>>(emptyList()) }
     val listState = rememberLazyListState()
+    val rotaryScope = rememberCoroutineScope()
     val rawMessages = conversation?.messages ?: emptyList()
     // Apply in-memory streaming overlay so the assistant message updates per-token
     // without DataStore writes.
@@ -108,45 +138,104 @@ fun ChatScreen(
     var editingMessageId by rememberSaveable { mutableStateOf<String?>(null) }
     var editingDraft by rememberSaveable { mutableStateOf("") }
 
-    LaunchedEffect(messages.size, isStreaming) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    LaunchedEffect(conversation?.id, messages.size) {
+        if (messages.isNotEmpty() && !listState.isScrollInProgress) {
+            listState.scrollToItem(messages.lastIndex)
+        }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .imePadding()
-    ) {
+    val scrollChrome = remember(roundScreen, conversation?.id, swipeThreshold, imeVisible) {
+        object : NestedScrollConnection {
+            private var distance = 0f
+
+            fun record(delta: Float) {
+                if (!roundScreen || imeVisible || delta == 0f) return
+                distance = if (distance * delta < 0f) delta else distance + delta
+                if (abs(distance) >= swipeThreshold) {
+                    chromeVisible = distance > 0
+                    distance = 0f
+                }
+            }
+
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && abs(available.y) > abs(available.x)) {
+                    record(available.y)
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                distance = 0f
+                return Velocity.Zero
+            }
+        }
+    }
+    val surface = MaterialTheme.colorScheme.background
+    val root = Modifier.fillMaxSize().background(surface).imePadding()
+        .onPreRotaryScrollEvent { event ->
+            if (rotaryActive) {
+                if (messages.isNotEmpty()) scrollChrome.record(-event.verticalScrollPixels)
+                rotaryScope.launch { listState.scrollBy(event.verticalScrollPixels) }
+            }
+            rotaryActive
+        }
+    val modelLabel = settings.activeModel.ifBlank { stringResource(R.string.select_model) }
+    val header: @Composable () -> Unit = {
         ChatTopBar(
             title = conversation?.title?.takeIf { it.isNotBlank() }
                 ?: stringResource(R.string.app_name),
-            modelLabel = settings.activeModel.ifBlank { "Select model" },
+            modelLabel = modelLabel,
             providerLabel = activeProvider?.name,
             onMenu = onMenu,
             onPickModel = onPickModel,
-            onNew = onNew
+            onNew = onNew,
+            roundScreen = roundScreen
         )
-
+    }
+    val composer: @Composable () -> Unit = {
+        InputBar(
+            value = input,
+            onValueChange = { input = it },
+            attachments = pendingAttachments,
+            onAttachmentsChange = { pendingAttachments = it },
+            onSend = {
+                if (onSend(input.text, pendingAttachments)) {
+                    input = TextFieldValue("")
+                    pendingAttachments = emptyList()
+                    chromeVisible = true
+                }
+            },
+            onStop = onStop,
+            isStreaming = isStreaming,
+            enabled = activeProvider != null && settings.activeModel.isNotBlank(),
+            roundScreen = roundScreen,
+            webSearchEnabled = settings.webSearchEnabled,
+            webSearchKeyConfigured = settings.webSearchApiKey.isNotBlank(),
+            onToggleWebSearch = onToggleWebSearch,
+            onConfigureWebSearch = onOpenSettings
+        )
+    }
+    val timeline: @Composable (Modifier, PaddingValues) -> Unit = { modifier, padding ->
         if (messages.isEmpty()) {
             EmptyState(
                 onPick = { onSend(it, emptyList()) },
                 onOpenSettings = onOpenSettings,
                 showSettingsHint = activeProvider == null,
-                modifier = Modifier.weight(1f)
+                roundScreen = roundScreen,
+                modifier = modifier.padding(padding)
             )
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
+                modifier = modifier.fillMaxWidth()
+                    .nestedScroll(scrollChrome)
+                    .watchRotaryScroll(listState, rotaryActive),
+                contentPadding = padding,
+                verticalArrangement = Arrangement.spacedBy(if (roundScreen) 8.dp else 20.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
                     MessageItem(
                         message = msg,
-                        senderLabel = if (msg.role == "user") "You"
-                        else settings.activeModel.ifBlank { activeProvider?.name ?: "Assistant" },
                         isLastAssistant = msg.id == messages.lastOrNull()?.id && msg.role == "assistant",
                         isStreaming = isStreaming,
                         editing = editingMessageId == msg.id,
@@ -171,14 +260,67 @@ fun ChatScreen(
                         onRegenerateFrom = { onRegenerateFrom(msg.id) }
                     )
                 }
+                if (roundScreen && messages.lastOrNull()?.role == "assistant"
+                    && !isStreaming && messages.last().content.isNotEmpty()) {
+                    item {
+                        Row(modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(20.dp))
+                                    .clickable(onClick = onRegenerate)
+                                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                            ) {
+                                Text(stringResource(R.string.regenerate),
+                                    style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
 
+    if (roundScreen) {
+        val showControls = chromeVisible || messages.isEmpty() || imeVisible
+        val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        // These insets depend on control geometry, never on fade progress.
+        val bottomInset = with(density) { composerHeightPx.toDp() }.coerceAtLeast(56.dp)
+        Box(root) {
+            timeline(
+                Modifier.fillMaxSize(),
+                PaddingValues(start = 26.dp, end = 26.dp, top = statusTop + 56.dp, bottom = bottomInset)
+            )
+            AnimatedVisibility(
+                visible = showControls,
+                modifier = Modifier.align(Alignment.TopCenter),
+                enter = fadeIn(tween(180)),
+                exit = fadeOut(tween(150)),
+                label = "watch chat header"
+            ) {
+                Box(Modifier.fillMaxWidth().drawBehind {
+                    drawRect(Brush.verticalGradient(listOf(surface, surface.copy(alpha = 0.85f), Color.Transparent)))
+                }) { header() }
+            }
+            AnimatedVisibility(
+                visible = showControls,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                enter = fadeIn(tween(180)),
+                exit = fadeOut(tween(150)),
+                label = "watch chat composer"
+            ) {
+                Box(Modifier.fillMaxWidth().onSizeChanged { composerHeightPx = it.height }.drawBehind {
+                    drawRect(Brush.verticalGradient(listOf(Color.Transparent, surface.copy(alpha = 0.9f), surface)))
+                }) { composer() }
+            }
+        }
+    } else Column(root) {
+        header()
+        timeline(Modifier.weight(1f), PaddingValues(horizontal = 18.dp, vertical = 16.dp))
         AnimatedVisibility(
-            visible = messages.isNotEmpty()
-                && messages.last().role == "assistant"
-                && !isStreaming
-                && messages.last().content.isNotEmpty(),
+            visible = messages.lastOrNull()?.let { it.role == "assistant" && it.content.isNotEmpty() } == true
+                && !isStreaming,
             enter = fadeIn(), exit = fadeOut()
         ) {
             Row(
@@ -206,22 +348,7 @@ fun ChatScreen(
             }
         }
 
-        InputBar(
-            value = input,
-            onValueChange = { input = it },
-            attachments = pendingAttachments,
-            onAttachmentsChange = { pendingAttachments = it },
-            onSend = {
-                val text = input
-                val atts = pendingAttachments
-                input = ""
-                pendingAttachments = emptyList()
-                onSend(text, atts)
-            },
-            onStop = onStop,
-            isStreaming = isStreaming,
-            enabled = activeProvider != null && settings.activeModel.isNotBlank()
-        )
+        composer()
     }
 }
 
@@ -232,8 +359,60 @@ private fun ChatTopBar(
     providerLabel: String?,
     onMenu: () -> Unit,
     onPickModel: () -> Unit,
-    onNew: () -> Unit
+    onNew: () -> Unit,
+    roundScreen: Boolean
 ) {
+    if (roundScreen) {
+        val pill = MaterialTheme.colorScheme.surfaceContainerHigh
+        val foreground = MaterialTheme.colorScheme.onSurface
+        val outline = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding())
+                .padding(horizontal = 36.dp)
+                .padding(top = 17.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(
+                modifier = Modifier.size(32.dp).clip(CircleShape).background(pill)
+                    .border(0.5.dp, outline, CircleShape).clickable(onClick = onMenu),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Menu, contentDescription = stringResource(R.string.chats_title),
+                    tint = foreground, modifier = Modifier.size(18.dp))
+            }
+            Row(
+                modifier = Modifier.weight(1f).height(32.dp).clip(CircleShape).background(pill)
+                    .border(0.5.dp, outline, CircleShape)
+                    .clickable(onClickLabel = stringResource(R.string.select_model), onClick = onPickModel)
+                    .padding(horizontal = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    modelLabel,
+                    modifier = Modifier.weight(1f, fill = false),
+                    color = foreground,
+                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(2.dp))
+                Icon(Icons.Default.ExpandMore, contentDescription = null,
+                    tint = foreground, modifier = Modifier.size(12.dp))
+            }
+            Box(
+                modifier = Modifier.size(32.dp).clip(CircleShape).background(pill)
+                    .border(0.5.dp, outline, CircleShape).clickable(onClick = onNew),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Edit, contentDescription = stringResource(R.string.new_chat),
+                    tint = foreground, modifier = Modifier.size(17.dp))
+            }
+        }
+        return
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -317,7 +496,6 @@ private fun ChatTopBar(
 @Composable
 private fun MessageItem(
     message: Message,
-    senderLabel: String,
     isLastAssistant: Boolean,
     isStreaming: Boolean,
     editing: Boolean = false,
@@ -345,7 +523,6 @@ private fun MessageItem(
     } else {
         AssistantRow(
             message = message,
-            senderLabel = senderLabel,
             isLastAssistant = isLastAssistant,
             isStreaming = isStreaming,
             onDelete = onDelete
@@ -454,10 +631,6 @@ private fun UserBubble(
                                 )
                             )
                             .background(MaterialTheme.colorScheme.primary)
-                            .combinedClickable(
-                                onClick = {},
-                                onLongClick = { menuOpen = true }
-                            )
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         SelectionContainer {
@@ -512,144 +685,120 @@ private fun UserBubble(
                         )
                     }
                 }
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = "message actions",
+                    modifier = Modifier.size(28.dp).clickable { menuOpen = true }.padding(4.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun AssistantRow(
     message: Message,
-    senderLabel: String,
     isLastAssistant: Boolean,
     isStreaming: Boolean,
     onDelete: () -> Unit
 ) {
-    var menuOpen by remember { mutableStateOf(false) }
-    val clipboard = LocalClipboardManager.current
+    var menuOpen by remember(message.id) { mutableStateOf(false) }
+    val generating = isLastAssistant && isStreaming
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AvatarChip(isUser = false)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                senderLabel,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
-                ),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        if (message.content.isEmpty() && isLastAssistant && isStreaming) {
-            TypingDots()
+        if (message.content.isEmpty() && generating) {
+            Row(
+                modifier = Modifier.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    stringResource(R.string.thinking),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(8.dp))
+                TypingDots()
+            }
         } else {
-            Box {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(
-                            onClick = {},
-                            onLongClick = { if (message.content.isNotEmpty()) menuOpen = true }
+            SelectionContainer {
+                MarkdownText(
+                    text = message.content,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        if (!generating) {
+            Row(
+                modifier = Modifier.padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (message.content.isNotEmpty()) ReplyCopyButton(message.content)
+                Box {
+                    Box(
+                        modifier = Modifier.size(36.dp).clip(CircleShape)
+                            .clickable { menuOpen = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = stringResource(R.string.reply_actions),
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                ) {
-                    SelectionContainer {
-                        MarkdownText(
-                            text = message.content,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.fillMaxWidth()
+                    }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false }
+                    ) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text(stringResource(R.string.delete)) },
+                            leadingIcon = {
+                                Icon(Icons.Default.Delete, contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error)
+                            },
+                            onClick = {
+                                menuOpen = false
+                                onDelete()
+                            }
                         )
                     }
                 }
-                androidx.compose.material3.DropdownMenu(
-                    expanded = menuOpen,
-                    onDismissRequest = { menuOpen = false }
-                ) {
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text(stringResource(R.string.copy)) },
-                        leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
-                        onClick = {
-                            clipboard.setText(AnnotatedString(message.content))
-                            menuOpen = false
-                        }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text(stringResource(R.string.delete)) },
-                        leadingIcon = {
-                            Icon(
-                                androidx.compose.material.icons.Icons.Default.Delete,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        },
-                        onClick = {
-                            menuOpen = false
-                            onDelete()
-                        }
-                    )
-                }
             }
         }
-        if (message.content.isNotEmpty() && (!isLastAssistant || !isStreaming)) {
-            Spacer(Modifier.height(8.dp))
-            CopyButton(content = message.content)
+    }
+}
+
+@Composable
+internal fun ReplyCopyButton(content: String, codeBlock: Boolean = false) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(content) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1200)
+            copied = false
         }
     }
-}
-
-@Composable
-private fun AvatarChip(isUser: Boolean) {
-    val bg = if (isUser) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.surfaceVariant
-    val fg = if (isUser) MaterialTheme.colorScheme.onPrimary
-    else MaterialTheme.colorScheme.onSurface
     Box(
-        modifier = Modifier
-            .size(22.dp)
-            .clip(RoundedCornerShape(7.dp))
-            .background(bg),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            if (isUser) "U" else "M",
-            color = fg,
-            fontWeight = FontWeight.Bold,
-            fontSize = 12.sp
-        )
-    }
-}
-
-@Composable
-private fun CopyButton(content: String) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1200); copied = false } }
-
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .clickable {
+        modifier = Modifier.size(36.dp).clip(CircleShape)
+            .clickable(enabled = content.isNotEmpty()) {
                 clipboard.setText(AnnotatedString(content))
                 copied = true
-            }
-            .padding(horizontal = 6.dp, vertical = 4.dp)
+            },
+        contentAlignment = Alignment.Center
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                contentDescription = "copy",
-                modifier = Modifier.size(14.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                if (copied) "Copied" else stringResource(R.string.copy),
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        Icon(
+            imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+            contentDescription = stringResource(when {
+                copied -> R.string.copied
+                codeBlock -> R.string.copy_code
+                else -> R.string.copy_reply
+            }),
+            modifier = Modifier.size(17.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -685,8 +834,37 @@ private fun EmptyState(
     onPick: (String) -> Unit,
     onOpenSettings: () -> Unit,
     showSettingsHint: Boolean,
+    roundScreen: Boolean,
     modifier: Modifier = Modifier
 ) {
+    if (roundScreen) {
+        Column(
+            modifier = modifier.fillMaxWidth().padding(horizontal = 42.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            if (showSettingsHint) {
+                Text(
+                    stringResource(R.string.setup_provider),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .clickable(onClick = onOpenSettings)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1
+                )
+            } else {
+                Text(
+                    stringResource(R.string.empty_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1
+                )
+            }
+        }
+        return
+    }
     val examples = listOf(
         stringResource(R.string.example_prompt_1),
         stringResource(R.string.example_prompt_2),
@@ -694,13 +872,14 @@ private fun EmptyState(
         stringResource(R.string.example_prompt_4)
     )
     Column(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp),
+        modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+            .padding(horizontal = if (roundScreen) 36.dp else 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)
+                .size(if (roundScreen) 48.dp else 72.dp)
                 .clip(RoundedCornerShape(20.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center

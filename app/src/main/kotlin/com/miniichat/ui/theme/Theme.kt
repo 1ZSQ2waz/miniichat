@@ -4,12 +4,14 @@ import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -21,54 +23,61 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 
 /**
- * Clean iOS-style flat theme.
- * Pure white / near-black backgrounds, hairline dividers, accent purple for primary.
+ * Material 3 tonal fallback for Android 10 and other devices without dynamic color.
+ * Android 12+ can derive the palette from the system wallpaper.
  */
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF6E5CFF),
+    primary = Color(0xFF605A8E),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFEDE9FF),
-    onPrimaryContainer = Color(0xFF170B5C),
-    secondary = Color(0xFF6E5CFF),
+    primaryContainer = Color(0xFFE5DFFF),
+    onPrimaryContainer = Color(0xFF1C1944),
+    secondary = Color(0xFF625D71),
     onSecondary = Color.White,
-    background = Color(0xFFFFFFFF),
-    onBackground = Color(0xFF111114),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF111114),
-    surfaceVariant = Color(0xFFF3F2F7),
-    onSurfaceVariant = Color(0xFF6F6E78),
-    outline = Color(0xFFE3E1EA),
-    outlineVariant = Color(0xFFEEEDF2),
-    error = Color(0xFFE34864),
+    background = Color(0xFFE8E6E1),
+    onBackground = Color(0xFF1C1B20),
+    surface = Color(0xFFF1EFEA),
+    onSurface = Color(0xFF1C1B20),
+    surfaceVariant = Color(0xFFDED9E3),
+    surfaceDim = Color(0xFFDAD7D2),
+    surfaceBright = Color(0xFFF2F0EC),
+    surfaceContainerLowest = Color(0xFFF5F3EE),
+    surfaceContainerLow = Color(0xFFEEECE7),
+    surfaceContainer = Color(0xFFE7E4E0),
+    surfaceContainerHigh = Color(0xFFE1DEDA),
+    surfaceContainerHighest = Color(0xFFDAD7D3),
+    onSurfaceVariant = Color(0xFF49454F),
+    outline = Color(0xFF79747E),
+    outlineVariant = Color(0xFFCAC4D0),
+    error = Color(0xFFBA1A1A),
     onError = Color.White
 )
 
 // Tightened dark scheme: lighter onSurfaceVariant for legibility, slightly bolder
 // surface contrast so subtle UI (chips, dividers, hint text) reads cleanly.
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFB1A4FF),
-    onPrimary = Color(0xFF15093D),
-    primaryContainer = Color(0xFF3826A8),
-    onPrimaryContainer = Color(0xFFEDE7FF),
-    secondary = Color(0xFFB1A4FF),
-    onSecondary = Color(0xFF15093D),
-    background = Color(0xFF000000),
-    onBackground = Color(0xFFF2F1F7),
-    surface = Color(0xFF101013),
-    onSurface = Color(0xFFF2F1F7),
-    surfaceVariant = Color(0xFF24242C),
-    onSurfaceVariant = Color(0xFFC4C2D0),
-    outline = Color(0xFF3A3A45),
-    outlineVariant = Color(0xFF26262E),
-    error = Color(0xFFFF8FA0),
-    onError = Color(0xFF3D0011)
+    primary = Color(0xFFC8C2FF),
+    onPrimary = Color(0xFF302B5C),
+    primaryContainer = Color(0xFF484371),
+    onPrimaryContainer = Color(0xFFE5DFFF),
+    secondary = Color(0xFFCBC4D8),
+    onSecondary = Color(0xFF332E41),
+    background = Color(0xFF141218),
+    onBackground = Color(0xFFE7E1E9),
+    surface = Color(0xFF211F26),
+    onSurface = Color(0xFFE7E1E9),
+    surfaceVariant = Color(0xFF49454F),
+    onSurfaceVariant = Color(0xFFCAC4D0),
+    outline = Color(0xFF938F99),
+    outlineVariant = Color(0xFF49454F),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005)
 )
 
 private val AppTypography = Typography(
     titleLarge = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
     titleMedium = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.1).sp),
-    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
-    bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+    bodyLarge = TextStyle(fontSize = 18.sp, lineHeight = 25.sp),
+    bodyMedium = TextStyle(fontSize = 16.sp, lineHeight = 22.sp),
     labelLarge = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Medium),
     labelSmall = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.4.sp)
 )
@@ -88,24 +97,19 @@ fun MiniiChatTheme(
     val colors = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val ctx = LocalContext.current
-            val dyn = if (darkTheme) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
-            // Material You's generated dark scheme can produce very low-contrast
-            // onSurfaceVariant against its surface, especially under cool-toned
-            // wallpapers. Override the most legibility-critical roles to keep
-            // chip labels, hints, and divider tints readable while still using
-            // the wallpaper-derived hue for primary / containers.
-            if (darkTheme) {
-                dyn.copy(
-                    background = Color(0xFF000000),
-                    onBackground = Color(0xFFF2F1F7),
-                    surface = Color(0xFF101013),
-                    onSurface = Color(0xFFF2F1F7),
-                    surfaceVariant = Color(0xFF24242C),
-                    onSurfaceVariant = Color(0xFFC4C2D0),
-                    outline = Color(0xFF3A3A45),
-                    outlineVariant = Color(0xFF26262E)
-                )
-            } else dyn
+            if (darkTheme) dynamicDarkColorScheme(ctx)
+            else dynamicLightColorScheme(ctx).copy(
+                background = LightColors.background,
+                surface = LightColors.surface,
+                surfaceVariant = LightColors.surfaceVariant,
+                surfaceDim = LightColors.surfaceDim,
+                surfaceBright = LightColors.surfaceBright,
+                surfaceContainerLowest = LightColors.surfaceContainerLowest,
+                surfaceContainerLow = LightColors.surfaceContainerLow,
+                surfaceContainer = LightColors.surfaceContainer,
+                surfaceContainerHigh = LightColors.surfaceContainerHigh,
+                surfaceContainerHighest = LightColors.surfaceContainerHighest
+            )
         }
         darkTheme -> DarkColors
         else -> LightColors
@@ -122,7 +126,10 @@ fun MiniiChatTheme(
     }
     MaterialTheme(
         colorScheme = colors,
-        typography = AppTypography,
-        content = content
-    )
+        typography = AppTypography
+    ) {
+        CompositionLocalProvider(LocalContentColor provides colors.onBackground) {
+            content()
+        }
+    }
 }

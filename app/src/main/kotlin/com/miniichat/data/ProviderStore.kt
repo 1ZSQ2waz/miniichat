@@ -21,15 +21,18 @@ class ProviderStore(private val context: Context) {
     val providersFlow: Flow<List<ProviderConfig>> =
         context.providersDataStore.data.map { prefs ->
             val raw = prefs[key] ?: return@map emptyList()
-            runCatching { json.decodeFromString(ListSerializer(ProviderConfig.serializer()), raw) }
-                .getOrDefault(emptyList())
+            json.decodeFromString(ListSerializer(ProviderConfig.serializer()), raw)
+                .map { it.copy(apiKey = SecretBox.decrypt(it.apiKey)) }
         }
 
     suspend fun snapshot(): List<ProviderConfig> = providersFlow.first()
 
     suspend fun save(list: List<ProviderConfig>) {
         context.providersDataStore.edit { prefs ->
-            prefs[key] = json.encodeToString(ListSerializer(ProviderConfig.serializer()), list)
+            prefs[key] = json.encodeToString(
+                ListSerializer(ProviderConfig.serializer()),
+                list.map { it.copy(apiKey = SecretBox.encrypt(it.apiKey)) }
+            )
         }
     }
 

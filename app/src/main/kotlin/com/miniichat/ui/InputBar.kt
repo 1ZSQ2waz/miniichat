@@ -47,12 +47,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.miniichat.R
@@ -61,21 +65,27 @@ import com.miniichat.util.AttachmentLoader
 
 @Composable
 fun InputBar(
-    value: String,
-    onValueChange: (String) -> Unit,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
     attachments: List<Attachment>,
     onAttachmentsChange: (List<Attachment>) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     isStreaming: Boolean,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    roundScreen: Boolean = false,
+    webSearchEnabled: Boolean = false,
+    webSearchKeyConfigured: Boolean = false,
+    onToggleWebSearch: () -> Unit = {},
+    onConfigureWebSearch: () -> Unit = {}
 ) {
     val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val ctx = LocalContext.current
     var attachMenuOpen by remember { mutableStateOf(false) }
 
     val pickImage = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
             val (name, size) = AttachmentLoader.queryNameSize(ctx.contentResolver, uri)
@@ -100,16 +110,18 @@ fun InputBar(
         }
     }
     val pickFile = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
             val (name, size) = AttachmentLoader.queryNameSize(ctx.contentResolver, uri)
-            if (size in 1..AttachmentLoader.MAX_ATTACHMENT_BYTES || size <= 0) {
+            val mime = ctx.contentResolver.getType(uri) ?: "application/octet-stream"
+            if (mime == "application/pdf") {
+                android.widget.Toast.makeText(ctx, "PDF is not supported. Choose a text or image file.", android.widget.Toast.LENGTH_LONG).show()
+            } else if (size in 1..AttachmentLoader.MAX_ATTACHMENT_BYTES || size <= 0) {
                 ctx.contentResolver.runCatching {
                     takePersistableUriPermission(uri,
                         android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                val mime = ctx.contentResolver.getType(uri) ?: "application/octet-stream"
                 val isImage = mime.startsWith("image/")
                 onAttachmentsChange(attachments + Attachment(
                     type = if (isImage) "image" else "file",
@@ -130,10 +142,11 @@ fun InputBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
+            .background(if (roundScreen) Color.Transparent else MaterialTheme.colorScheme.background)
             .padding(WindowInsets.navigationBars.asPaddingValues())
+            .padding(bottom = if (roundScreen) 18.dp else 0.dp)
     ) {
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
+        if (!roundScreen) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
 
         if (attachments.isNotEmpty()) {
             LazyRow(
@@ -150,17 +163,38 @@ fun InputBar(
             }
         }
 
+        if (!roundScreen) Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Text(
+                text = if (webSearchEnabled) "联网 · 开" else "联网",
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (webSearchEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { if (!webSearchEnabled && !webSearchKeyConfigured) onConfigureWebSearch() else onToggleWebSearch() }
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                style = MaterialTheme.typography.labelLarge,
+                color = if (webSearchEnabled) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom
+                .padding(horizontal = if (roundScreen) 24.dp else 12.dp, vertical = if (roundScreen) 4.dp else 8.dp)
+                .then(if (roundScreen) Modifier.clip(RoundedCornerShape(24.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .padding(horizontal = 5.dp, vertical = 4.dp) else Modifier),
+            verticalAlignment = if (roundScreen) Alignment.CenterVertically else Alignment.Bottom
         ) {
             // attach
             Box {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(if (roundScreen) 32.dp else 36.dp)
                         .clip(CircleShape)
                         .clickable { attachMenuOpen = true },
                     contentAlignment = Alignment.Center
@@ -181,7 +215,7 @@ fun InputBar(
                         leadingIcon = { Icon(Icons.Default.Image, null) },
                         onClick = {
                             attachMenuOpen = false
-                            pickImage.launch("image/*")
+                            pickImage.launch(arrayOf("image/*"))
                         }
                     )
                     DropdownMenuItem(
@@ -189,7 +223,15 @@ fun InputBar(
                         leadingIcon = { Icon(Icons.Default.AttachFile, null) },
                         onClick = {
                             attachMenuOpen = false
-                            pickFile.launch("*/*")
+                            pickFile.launch(arrayOf("text/*", "application/json", "application/xml", "application/pdf", "image/*"))
+                        }
+                    )
+                    if (roundScreen) DropdownMenuItem(
+                        text = { Text(stringResource(if (webSearchEnabled) R.string.search_on else R.string.search_off)) },
+                        onClick = {
+                            attachMenuOpen = false
+                            if (!webSearchEnabled && !webSearchKeyConfigured) onConfigureWebSearch()
+                            else onToggleWebSearch()
                         }
                     )
                 }
@@ -199,37 +241,47 @@ fun InputBar(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 40.dp, max = 160.dp)
+                    .heightIn(min = if (roundScreen) 34.dp else 40.dp, max = if (roundScreen) 52.dp else 160.dp)
                     .clip(RoundedCornerShape(20.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .background(if (roundScreen) Color.Transparent else MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = if (roundScreen) 3.dp else 12.dp, vertical = if (roundScreen) 2.dp else 10.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
-                if (value.isEmpty()) {
-                    Text(
-                        stringResource(R.string.hint_input),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyLarge
+                if (roundScreen) {
+                    WatchDraftField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        enabled = enabled,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    if (value.text.isEmpty()) {
+                        Text(
+                            stringResource(R.string.hint_input),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyLarge,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = LocalTextStyle.current.copy(
+                            color = LocalContentColor.current,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                        maxLines = 6,
+                        enabled = enabled
                     )
                 }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = LocalTextStyle.current.copy(
-                        color = LocalContentColor.current,
-                        fontSize = 16.sp,
-                        lineHeight = 22.sp
-                    ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    maxLines = 6,
-                    enabled = enabled
-                )
             }
             Spacer(Modifier.width(6.dp))
             // send / stop
-            val canSend = (value.trim().isNotEmpty() || attachments.isNotEmpty())
+            val canSend = (value.text.trim().isNotEmpty() || attachments.isNotEmpty())
                 && !isStreaming && enabled
             val sendBg = when {
                 isStreaming -> MaterialTheme.colorScheme.onSurface
@@ -243,13 +295,15 @@ fun InputBar(
             }
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(if (roundScreen) 32.dp else 36.dp)
                     .clip(CircleShape)
                     .background(sendBg)
                     .clickable(enabled = isStreaming || canSend) {
                         if (isStreaming) onStop()
                         else if (canSend) {
-                            focus.clearFocus(); onSend()
+                            keyboard?.hide()
+                            focus.clearFocus()
+                            onSend()
                         }
                     },
                 contentAlignment = Alignment.Center
