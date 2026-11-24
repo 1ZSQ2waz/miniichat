@@ -31,7 +31,7 @@ MiniiChat includes a dedicated layout for round Android watches. It has been tes
 
 ## Download
 
-- **Latest release**: <https://github.com/Minis233/miniichat/releases/latest>
+- **Latest release**: <https://github.com/1ZSQ2waz/miniichat/releases/latest>
 - Each release ships a signed `release` APK (for general use) and a `debug` APK (for development).
 
 ## Configuration
